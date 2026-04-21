@@ -11,20 +11,24 @@ Usage:
     # fp32 mode:
     python examples/benchmark_gpu_scaling.py --dtype fp32
 """
+
 from __future__ import annotations
 
 import argparse
 import time
 
 import torch
+
 import flash_kmeans.kmeans_large as _mod
 from flash_kmeans.kmeans_large import kmeans_largeN
 
 
 def _make_resolve_n(n):
     """Return a _resolve_devices replacement that uses the first n GPUs."""
+
     def _resolve(device):
         return [torch.device(f"cuda:{i}") for i in range(n)]
+
     return _resolve
 
 
@@ -44,14 +48,27 @@ def bench_one(x, k, max_iters, tol, num_gpus, warmup_iters=2, verbose=False):
 
     try:
         # warmup
-        kmeans_largeN(x, k, max_iters=warmup_iters, tol=-1,
-                      init_centroids=init.clone(), device=device)
+        kmeans_largeN(
+            x,
+            k,
+            max_iters=warmup_iters,
+            tol=-1,
+            init_centroids=init.clone(),
+            device=device,
+        )
         torch.cuda.synchronize()
 
         # timed run
         start = time.time()
-        kmeans_largeN(x, k, max_iters=max_iters, tol=tol,
-                      init_centroids=init.clone(), device=device, verbose=verbose)
+        kmeans_largeN(
+            x,
+            k,
+            max_iters=max_iters,
+            tol=tol,
+            init_centroids=init.clone(),
+            device=device,
+            verbose=verbose,
+        )
         torch.cuda.synchronize()
         elapsed_ms = (time.time() - start) * 1000
     finally:
@@ -62,16 +79,30 @@ def bench_one(x, k, max_iters, tol, num_gpus, warmup_iters=2, verbose=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark multi-GPU scaling for kmeans_largeN")
+    parser = argparse.ArgumentParser(
+        description="Benchmark multi-GPU scaling for kmeans_largeN"
+    )
     parser.add_argument("-n", "--num-points", type=int, default=100_000_000)
     parser.add_argument("-d", "--dim", type=int, default=128)
     parser.add_argument("-k", "--num-clusters", type=int, default=8192)
     parser.add_argument("--max-iters", type=int, default=100)
-    parser.add_argument("--tol", type=float, default=-1, help="negative = no early stop")
-    parser.add_argument("--dtype", type=str, default="fp16", choices=["fp16", "fp32"],
-                        help="compute dtype (default: fp16)")
-    parser.add_argument("--gpus", type=int, nargs="+", default=None,
-                        help="GPU counts to test, e.g. --gpus 1 2 4 8. Default: 1..G")
+    parser.add_argument(
+        "--tol", type=float, default=-1, help="negative = no early stop"
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="fp16",
+        choices=["fp16", "fp32"],
+        help="compute dtype (default: fp16)",
+    )
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        nargs="+",
+        default=None,
+        help="GPU counts to test, e.g. --gpus 1 2 4 8. Default: 1..G",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -80,30 +111,45 @@ def main():
 
     gpu_counts = args.gpus if args.gpus else list(range(1, G_total + 1))
     for g in gpu_counts:
-        assert 1 <= g <= G_total, f"--gpus {g} exceeds visible GPU count {G_total}"
+        assert (
+            1 <= g <= G_total
+        ), f"--gpus {g} exceeds visible GPU count {G_total}"
 
     compute_dtype = torch.float16 if args.dtype == "fp16" else torch.float32
 
-    print(f"Config: N={args.num_points:,}  D={args.dim}  K={args.num_clusters}  "
-          f"iters={args.max_iters}  dtype={args.dtype}  GPUs visible={G_total}")
+    print(
+        f"Config: N={args.num_points:,}  D={args.dim}  K={args.num_clusters}  "
+        f"iters={args.max_iters}  dtype={args.dtype}  GPUs visible={G_total}"
+    )
     print(f"Testing GPU counts: {gpu_counts}")
     print()
 
     # Generate data once (pinned, fp16 storage to save CPU memory at large N)
     torch.manual_seed(42)
-    x = torch.randn(args.num_points, args.dim, device="cpu",
-                     dtype=compute_dtype).pin_memory()
-    print(f"Data generated: {x.shape}, dtype={x.dtype}, pinned={x.is_pinned()}")
+    x = torch.randn(
+        args.num_points, args.dim, device="cpu", dtype=compute_dtype
+    ).pin_memory()
+    print(
+        f"Data generated: {x.shape}, dtype={x.dtype}, pinned={x.is_pinned()}"
+    )
     print()
 
     results = []  # (num_gpus, total_ms, ms_per_iter)
 
     for g in gpu_counts:
-        elapsed = bench_one(x, args.num_clusters, args.max_iters, args.tol,
-                            num_gpus=g, verbose=args.verbose)
+        elapsed = bench_one(
+            x,
+            args.num_clusters,
+            args.max_iters,
+            args.tol,
+            num_gpus=g,
+            verbose=args.verbose,
+        )
         ms_per_iter = elapsed / args.max_iters
         results.append((g, elapsed, ms_per_iter))
-        print(f"  GPUs={g}:  {elapsed:10.1f} ms total,  {ms_per_iter:8.2f} ms/iter")
+        print(
+            f"  GPUs={g}:  {elapsed:10.1f} ms total,  {ms_per_iter:8.2f} ms/iter"
+        )
 
     # Summary table
     print()

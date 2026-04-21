@@ -1,4 +1,5 @@
 from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
@@ -23,7 +24,9 @@ def _ceil_div(a: int, b: int) -> int:
 # -----------------------------------------------------------------------------
 
 _TUNE_CONFIGS = [
-    triton.Config({"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=num_stages, num_warps=wp)
+    triton.Config(
+        {"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=num_stages, num_warps=wp
+    )
     for BN in [32, 64, 128]
     for BK in [32, 64, 128]
     for wp in [4, 8]
@@ -39,6 +42,7 @@ def _cfg_keep(conf):
     if BN * BK < 32 * 32 and conf.num_warps > 4:
         return False
     return True
+
 
 _TUNE_CONFIGS = list(filter(_cfg_keep, _TUNE_CONFIGS))
 
@@ -75,7 +79,9 @@ def _is_half_dtype(dtype) -> bool:
     return False
 
 
-def _smem_bytes(D: int, BN: int, BK: int, num_stages: int, dtype_bytes: int) -> int:
+def _smem_bytes(
+    D: int, BN: int, BK: int, num_stages: int, dtype_bytes: int
+) -> int:
     """Approximate dynamic shared-memory usage of `_euclid_assign_kernel`.
 
     The kernel materialises:
@@ -135,7 +141,12 @@ def _fit_config_to_smem(
     S0 = int(cfg["num_stages"])
 
     if _smem_bytes(D, BN0, BK0, S0, dtype_bytes) <= smem_limit:
-        return {"BLOCK_N": BN0, "BLOCK_K": BK0, "num_warps": W0, "num_stages": S0}
+        return {
+            "BLOCK_N": BN0,
+            "BLOCK_K": BK0,
+            "num_warps": W0,
+            "num_stages": S0,
+        }
 
     def _pow2_down_to_16(v):
         out = []
@@ -155,9 +166,7 @@ def _fit_config_to_smem(
                 # Prefer larger total tile work, then closer aspect ratio
                 # to the original, then larger BLOCK_N (more parallelism
                 # along N), then larger num_stages (better pipelining).
-                aspect_penalty = abs(
-                    (BN / max(BK, 1)) - (BN0 / max(BK0, 1))
-                )
+                aspect_penalty = abs((BN / max(BK, 1)) - (BN0 / max(BK0, 1)))
                 key = (BN * BK * S, -aspect_penalty, BN, S)
                 if best_key is None or key > best_key:
                     best_key = key
@@ -212,6 +221,7 @@ def _heuristic_euclid_config(
         # Original code path: trust the per-arch table without SMEM checks.
         def _finalize(cfg):
             return cfg
+
     else:
         dtype_bytes = _dtype_bytes(dtype)
         smem_limit = _smem_limit(device)
@@ -262,12 +272,14 @@ def _heuristic_euclid_config(
         if N < 65536:
             block_n = 64
 
-        return _finalize({
-            "BLOCK_N": block_n,
-            "BLOCK_K": block_k,
-            "num_warps": num_warps,
-            "num_stages": num_stages,
-        })
+        return _finalize(
+            {
+                "BLOCK_N": block_n,
+                "BLOCK_K": block_k,
+                "num_warps": num_warps,
+                "num_stages": num_stages,
+            }
+        )
 
     if "H100" in gpu_name:
         # H100 tuned heuristic (more conservative on D=64 mid-K vs H200).
@@ -330,12 +342,14 @@ def _heuristic_euclid_config(
         if N < 65536:
             block_n = 64
 
-        return _finalize({
-            "BLOCK_N": block_n,
-            "BLOCK_K": block_k,
-            "num_warps": num_warps,
-            "num_stages": num_stages,
-        })
+        return _finalize(
+            {
+                "BLOCK_N": block_n,
+                "BLOCK_K": block_k,
+                "num_warps": num_warps,
+                "num_stages": num_stages,
+            }
+        )
 
     if "A100" in gpu_name:
         # Robust default on A100 across tuned grid.
@@ -357,12 +371,14 @@ def _heuristic_euclid_config(
                 block_k = 64
                 num_stages = 4
 
-        return _finalize({
-            "BLOCK_N": block_n,
-            "BLOCK_K": block_k,
-            "num_warps": num_warps,
-            "num_stages": num_stages,
-        })
+        return _finalize(
+            {
+                "BLOCK_N": block_n,
+                "BLOCK_K": block_k,
+                "num_warps": num_warps,
+                "num_stages": num_stages,
+            }
+        )
 
     if "GB10" in gpu_name:
         # GB10 (Grace Blackwell, ~80 SMs, ~99 KiB SMEM/SM) tuned heuristic.
@@ -377,53 +393,117 @@ def _heuristic_euclid_config(
             # D=512 strongly prefers a small BLOCK_N with 8 warps, except for
             # very small K where 4 warps is enough to saturate.
             if K <= 256:
-                return _finalize({"BLOCK_N": 64, "BLOCK_K": 32, "num_warps": 4, "num_stages": 1})
-            return _finalize({"BLOCK_N": 64, "BLOCK_K": 32, "num_warps": 8, "num_stages": 1})
+                return _finalize(
+                    {
+                        "BLOCK_N": 64,
+                        "BLOCK_K": 32,
+                        "num_warps": 4,
+                        "num_stages": 1,
+                    }
+                )
+            return _finalize(
+                {"BLOCK_N": 64, "BLOCK_K": 32, "num_warps": 8, "num_stages": 1}
+            )
 
         if D >= 256:
             if K <= 256:
-                return _finalize({"BLOCK_N": 64, "BLOCK_K": 32, "num_warps": 4, "num_stages": 1})
+                return _finalize(
+                    {
+                        "BLOCK_N": 64,
+                        "BLOCK_K": 32,
+                        "num_warps": 4,
+                        "num_stages": 1,
+                    }
+                )
             # Deeper pipeline + wider K tile pays off for K>=1024 at D=256.
-            return _finalize({"BLOCK_N": 128, "BLOCK_K": 64, "num_warps": 4, "num_stages": 2})
+            return _finalize(
+                {
+                    "BLOCK_N": 128,
+                    "BLOCK_K": 64,
+                    "num_warps": 4,
+                    "num_stages": 2,
+                }
+            )
 
         if D >= 128:
             if K <= 256:
                 # Small K: a more square tile wins (BN=64, BK=64).
-                return _finalize({"BLOCK_N": 64, "BLOCK_K": 64, "num_warps": 4, "num_stages": 1})
+                return _finalize(
+                    {
+                        "BLOCK_N": 64,
+                        "BLOCK_K": 64,
+                        "num_warps": 4,
+                        "num_stages": 1,
+                    }
+                )
             if K <= 1024:
                 # Transition region: small N likes a square tile, large N
                 # benefits from BN=128 with deeper pipeline.
                 if N <= 65536:
-                    return _finalize({"BLOCK_N": 64, "BLOCK_K": 64, "num_warps": 4, "num_stages": 1})
-                return _finalize({"BLOCK_N": 128, "BLOCK_K": 32, "num_warps": 4, "num_stages": 2})
+                    return _finalize(
+                        {
+                            "BLOCK_N": 64,
+                            "BLOCK_K": 64,
+                            "num_warps": 4,
+                            "num_stages": 1,
+                        }
+                    )
+                return _finalize(
+                    {
+                        "BLOCK_N": 128,
+                        "BLOCK_K": 32,
+                        "num_warps": 4,
+                        "num_stages": 2,
+                    }
+                )
             if K <= 65536:
-                return _finalize({"BLOCK_N": 128, "BLOCK_K": 32, "num_warps": 4, "num_stages": 1})
+                return _finalize(
+                    {
+                        "BLOCK_N": 128,
+                        "BLOCK_K": 32,
+                        "num_warps": 4,
+                        "num_stages": 1,
+                    }
+                )
             # K > 65536 (e.g. 200k) prefers the wider K tile to amortize loads.
-            return _finalize({"BLOCK_N": 128, "BLOCK_K": 64, "num_warps": 4, "num_stages": 1})
+            return _finalize(
+                {
+                    "BLOCK_N": 128,
+                    "BLOCK_K": 64,
+                    "num_warps": 4,
+                    "num_stages": 1,
+                }
+            )
 
         # D <= 64: BN=128, BK=32, 4 warps is robust across the full grid.
         # Only the tiniest shapes (small N + small K) shift toward a square
         # BN=64/BK=64 tile; larger N keeps the wider BN=128 default.
         if K <= 256 and N <= 65536:
-            return _finalize({"BLOCK_N": 64, "BLOCK_K": 64, "num_warps": 4, "num_stages": 1})
-        return _finalize({"BLOCK_N": 128, "BLOCK_K": 32, "num_warps": 4, "num_stages": 1})
+            return _finalize(
+                {"BLOCK_N": 64, "BLOCK_K": 64, "num_warps": 4, "num_stages": 1}
+            )
+        return _finalize(
+            {"BLOCK_N": 128, "BLOCK_K": 32, "num_warps": 4, "num_stages": 1}
+        )
 
     # Conservative fallback for unknown architectures (prioritize avoiding OOR).
-    return _finalize({
-        "BLOCK_N": 64,
-        "BLOCK_K": 32,
-        "num_warps": 4,
-        "num_stages": 1,
-    })
+    return _finalize(
+        {
+            "BLOCK_N": 64,
+            "BLOCK_K": 32,
+            "num_warps": 4,
+            "num_stages": 1,
+        }
+    )
 
 
 @triton.jit
 def _euclid_assign_kernel(
-    x_ptr,                 # *f16 / *f32 [B, N, D]
-    c_ptr,                 # *f16 / *f32 [B, K, D]
-    x_sq_ptr,              # *f32         [B, N]
-    c_sq_ptr,              # *f32         [B, K]
-    out_ptr,               # *i32         [B, N]
+    x_ptr,  # *f16 / *f32 [B, N, D]
+    c_ptr,  # *f16 / *f32 [B, K, D]
+    x_sq_ptr,  # *f32         [B, N]
+    c_sq_ptr,  # *f32         [B, K]
+    out_ptr,  # *i32         [B, N]
     B: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
@@ -449,8 +529,8 @@ def _euclid_assign_kernel(
     maintains the running minimum distance as well as the corresponding index
     for every point in the tile.
     """
-    pid_n = tl.program_id(0)          # tile index along N dimension
-    pid_b = tl.program_id(1)          # batch index
+    pid_n = tl.program_id(0)  # tile index along N dimension
+    pid_b = tl.program_id(1)  # batch index
     pid_b = pid_b.to(tl.int64)
 
     n_start = pid_n * BLOCK_N
@@ -528,13 +608,17 @@ def _euclid_assign_kernel(
     out_ptrs = out_ptr + pid_b * stride_out_b + n_offsets * stride_out_n
     tl.store(out_ptrs, best_idx, mask=n_mask)
 
-_euclid_assign_kernel_autotuned = triton.autotune(_TUNE_CONFIGS, key=["N", "K"])(_euclid_assign_kernel)
+
+_euclid_assign_kernel_autotuned = triton.autotune(
+    _TUNE_CONFIGS, key=["N", "K"]
+)(_euclid_assign_kernel)
+
 
 @triton.jit
 def _cosine_assign_kernel(
-    x_ptr,                 # *f16 / *f32 [B, N, D]
-    c_ptr,                 # *f16 / *f32 [B, K, D]
-    out_ptr,               # *i32         [B, N]
+    x_ptr,  # *f16 / *f32 [B, N, D]
+    c_ptr,  # *f16 / *f32 [B, K, D]
+    out_ptr,  # *i32         [B, N]
     B: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
@@ -556,8 +640,8 @@ def _cosine_assign_kernel(
     maintains the running minimum distance as well as the corresponding index
     for every point in the tile.
     """
-    pid_n = tl.program_id(0)          # tile index along N dimension
-    pid_b = tl.program_id(1)          # batch index
+    pid_n = tl.program_id(0)  # tile index along N dimension
+    pid_b = tl.program_id(1)  # batch index
     pid_b = pid_b.to(tl.int64)
 
     n_start = pid_n * BLOCK_N
@@ -580,7 +664,7 @@ def _cosine_assign_kernel(
     x_tile = x_tile  # compute in f32
 
     # Init best distance / index
-    best_dist = tl.full((BLOCK_N,), -3.4e38, tl.float32)  # less is worse 
+    best_dist = tl.full((BLOCK_N,), -3.4e38, tl.float32)  # less is worse
     best_idx = tl.zeros((BLOCK_N,), tl.int32)
 
     # ------------------------------------------------------------------
@@ -620,12 +704,16 @@ def _cosine_assign_kernel(
     out_ptrs = out_ptr + pid_b * stride_out_b + n_offsets * stride_out_n
     tl.store(out_ptrs, best_idx, mask=n_mask)
 
-_cosine_assign_kernel_autotuned = triton.autotune(_TUNE_CONFIGS, key=["N", "K"])(_cosine_assign_kernel)
+
+_cosine_assign_kernel_autotuned = triton.autotune(
+    _TUNE_CONFIGS, key=["N", "K"]
+)(_cosine_assign_kernel)
 
 
 # ---------------------------------------------------------------
 # Python wrapper
 # ---------------------------------------------------------------
+
 
 def euclid_assign_triton(
     x: torch.Tensor,
@@ -656,7 +744,9 @@ def euclid_assign_triton(
         config        : {"BLOCK_N","BLOCK_K","num_warps","num_stages"} to force a config
         use_heuristic : use a fixed heuristic config instead of autotune
     """
-    assert x.is_cuda and centroids.is_cuda and x_sq.is_cuda, "All tensors must be on CUDA"
+    assert (
+        x.is_cuda and centroids.is_cuda and x_sq.is_cuda
+    ), "All tensors must be on CUDA"
     # assert x.dtype in (torch.float16, torch.float32), "x must be fp16/fp32"
     assert centroids.dtype == x.dtype, "centroids dtype mismatch"
 
@@ -755,8 +845,14 @@ def euclid_assign_triton(
     return out
 
 
-def cosine_assign_triton(x: torch.Tensor, centroids: torch.Tensor, out: torch.Tensor = None,
-                         *, BLOCK_N: int = 128, BLOCK_K: int = 128) -> torch.Tensor:
+def cosine_assign_triton(
+    x: torch.Tensor,
+    centroids: torch.Tensor,
+    out: torch.Tensor = None,
+    *,
+    BLOCK_N: int = 128,
+    BLOCK_K: int = 128,
+) -> torch.Tensor:
     """Return nearest(cosine similarity)-centroid indices using Triton kernel.
 
     Args:
@@ -807,6 +903,7 @@ def cosine_assign_triton(x: torch.Tensor, centroids: torch.Tensor, out: torch.Te
     )
     return out
 
+
 # ---------------------------------------------------------------
 # Quick correctness & performance check
 # ---------------------------------------------------------------
@@ -824,7 +921,9 @@ if __name__ == "__main__":
 
     # Reference
     dist = (
-        x_sq.unsqueeze(-1) + (cent.to(torch.float32) ** 2).sum(-1).unsqueeze(1) - 2.0 * torch.einsum("bnd,bkd->bnk", x, cent).to(torch.float32)
+        x_sq.unsqueeze(-1)
+        + (cent.to(torch.float32) ** 2).sum(-1).unsqueeze(1)
+        - 2.0 * torch.einsum("bnd,bkd->bnk", x, cent).to(torch.float32)
     ).clamp_min_(0.0)
     ref_ids = dist.argmin(dim=-1)
 
@@ -832,8 +931,9 @@ if __name__ == "__main__":
 
     print("Correct:", torch.equal(ref_ids.cpu(), tri_ids.cpu()))
 
-
-    dist_cos = torch.einsum("bnd,bkd->bnk", x.to(torch.float32), cent.to(torch.float32))
+    dist_cos = torch.einsum(
+        "bnd,bkd->bnk", x.to(torch.float32), cent.to(torch.float32)
+    )
     ref_ids_cos = dist_cos.argmax(dim=-1)
     tri_ids_cos = cosine_assign_triton(x, cent, out)
 
@@ -847,9 +947,14 @@ if __name__ == "__main__":
     start.record()
     for _ in range(repeats):
         euclid_assign_triton(x, cent, x_sq, out)
-    end.record(); torch.cuda.synchronize()
-    print(f"Avg time Triton: {start.elapsed_time(end)/repeats:.3f} ms for {B}x{N} points vs {K} centroids") 
-    print(f"{ref_ids[10, 69344]=}, {tri_ids[10, 69344]=}, {dist[10, 69344, ref_ids[10, 69344]]=}, {dist[10, 69344, tri_ids[10, 69344]]=}")
+    end.record()
+    torch.cuda.synchronize()
+    print(
+        f"Avg time Triton: {start.elapsed_time(end)/repeats:.3f} ms for {B}x{N} points vs {K} centroids"
+    )
+    print(
+        f"{ref_ids[10, 69344]=}, {tri_ids[10, 69344]=}, {dist[10, 69344, ref_ids[10, 69344]]=}, {dist[10, 69344, tri_ids[10, 69344]]=}"
+    )
     try:
         torch.testing.assert_close(ref_ids, tri_ids.to(ref_ids.dtype))
     except Exception as e:
@@ -858,10 +963,19 @@ if __name__ == "__main__":
     start.record()
     for _ in range(repeats):
         cosine_assign_triton(x, cent, out)
-    end.record(); torch.cuda.synchronize()
-    print(f"Avg time Triton Cosine: {start.elapsed_time(end)/repeats:.3f} ms for {B}x{N} points vs {K} centroids") 
-    print(f"{ref_ids_cos[10, 69344]=}, {tri_ids_cos[10, 69344]=}, {dist_cos[10, 69344, ref_ids_cos[10, 69344]]=}, {dist_cos[10, 69344, tri_ids_cos[10, 69344]]=}")
+    end.record()
+    torch.cuda.synchronize()
+    print(
+        f"Avg time Triton Cosine: {start.elapsed_time(end)/repeats:.3f} ms for {B}x{N} points vs {K} centroids"
+    )
+    print(
+        f"{ref_ids_cos[10, 69344]=}, {tri_ids_cos[10, 69344]=}, {dist_cos[10, 69344, ref_ids_cos[10, 69344]]=}, {dist_cos[10, 69344, tri_ids_cos[10, 69344]]=}"
+    )
     try:
-        torch.testing.assert_close(ref_ids_cos, tri_ids_cos.to(ref_ids_cos.dtype))
+        torch.testing.assert_close(
+            ref_ids_cos, tri_ids_cos.to(ref_ids_cos.dtype)
+        )
     except Exception as e:
+        print("Assertion failed:", e)
+        print("Assertion failed:", e)
         print("Assertion failed:", e)

@@ -2,14 +2,14 @@
 Monkey patch for FastKMeans to support torch.Tensor input without numpy conversion.
 """
 
-import torch
 import numpy as np
+import torch
 
 try:
     from fastkmeans import FastKMeans
-    from fastkmeans.kmeans import _kmeans_torch_double_chunked, _get_device
+    from fastkmeans.kmeans import _get_device, _kmeans_torch_double_chunked
     from fastkmeans.triton_kernels import triton_kmeans
-    
+
     def _patched_train(self, data):
         """Patched train to support torch.Tensor input directly without numpy conversion"""
         torch.manual_seed(self.seed)
@@ -43,7 +43,7 @@ try:
             use_triton=self.use_triton,
         )
         self.centroids = centroids.numpy()
-    
+
     def _patched_predict(self, data):
         """Patched predict to support torch.Tensor input and return torch.Tensor"""
         if self.centroids is None:
@@ -57,7 +57,9 @@ try:
 
         # We'll do a chunked assignment pass, similar to the main loop, but no centroid updates
         centroids_torch = torch.from_numpy(self.centroids)
-        centroids_torch = centroids_torch.to(device=self.device, dtype=torch.float32)
+        centroids_torch = centroids_torch.to(
+            device=self.device, dtype=torch.float32
+        )
         centroid_norms = (centroids_torch**2).sum(dim=1)
 
         n_samples = data_torch.shape[0]
@@ -67,12 +69,16 @@ try:
         while start_idx < n_samples:
             end_idx = min(start_idx + self.chunk_size_data, n_samples)
 
-            data_chunk = data_torch[start_idx:end_idx].to(device=self.device, dtype=torch.float32, non_blocking=True)
+            data_chunk = data_torch[start_idx:end_idx].to(
+                device=self.device, dtype=torch.float32, non_blocking=True
+            )
             data_chunk_norms = data_norms_torch[start_idx:end_idx].to(
                 device=self.device, dtype=torch.float32, non_blocking=True
             )
             batch_size = data_chunk.size(0)
-            best_ids = torch.zeros((batch_size,), device=self.device, dtype=torch.long)
+            best_ids = torch.zeros(
+                (batch_size,), device=self.device, dtype=torch.long
+            )
 
             if self.use_triton:
                 triton_kmeans(
@@ -83,7 +89,12 @@ try:
                     best_ids,
                 )
             else:
-                best_dist = torch.full((batch_size,), float("inf"), device=self.device, dtype=torch.float32)
+                best_dist = torch.full(
+                    (batch_size,),
+                    float("inf"),
+                    device=self.device,
+                    dtype=torch.float32,
+                )
                 c_start = 0
                 k = centroids_torch.shape[0]
                 while c_start < k:
@@ -91,26 +102,36 @@ try:
                     centroid_chunk = centroids_torch[c_start:c_end]
                     centroid_chunk_norms = centroid_norms[c_start:c_end]
 
-                    dist_chunk = data_chunk_norms.unsqueeze(1) + centroid_chunk_norms.unsqueeze(0)
-                    dist_chunk = dist_chunk.addmm_(data_chunk, centroid_chunk.t(), alpha=-2.0, beta=1.0)
+                    dist_chunk = data_chunk_norms.unsqueeze(
+                        1
+                    ) + centroid_chunk_norms.unsqueeze(0)
+                    dist_chunk = dist_chunk.addmm_(
+                        data_chunk, centroid_chunk.t(), alpha=-2.0, beta=1.0
+                    )
 
-                    local_min_vals, local_min_ids = torch.min(dist_chunk, dim=1)
+                    local_min_vals, local_min_ids = torch.min(
+                        dist_chunk, dim=1
+                    )
                     improved_mask = local_min_vals < best_dist
                     best_dist[improved_mask] = local_min_vals[improved_mask]
-                    best_ids[improved_mask] = c_start + local_min_ids[improved_mask]
+                    best_ids[improved_mask] = (
+                        c_start + local_min_ids[improved_mask]
+                    )
                     c_start = c_end
 
             labels[start_idx:end_idx] = best_ids
             start_idx = end_idx
 
         return labels
-    
+
     # Apply monkey patches
     FastKMeans.train = _patched_train
     FastKMeans.predict = _patched_predict
-    
-    print("✓ FastKMeans monkey patched: torch.Tensor input/output without numpy conversion")
-    
+
+    print(
+        "✓ FastKMeans monkey patched: torch.Tensor input/output without numpy conversion"
+    )
+
 except ImportError as e:
     print(f"✗ fastkmeans not available, skipping monkey patch: {e}")
 except Exception as e:

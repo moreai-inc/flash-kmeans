@@ -9,8 +9,11 @@ import tempfile
 import time
 
 
-def _measure_worker(n: int, d: int, k: int, rounds: int, dtype: str, use_heuristic: bool):
+def _measure_worker(
+    n: int, d: int, k: int, rounds: int, dtype: str, use_heuristic: bool
+):
     import torch
+
     from flash_kmeans import batch_kmeans_Euclid
 
     dtype_map = {"fp16": torch.float16, "fp32": torch.float32}
@@ -62,7 +65,9 @@ def _measure_worker(n: int, d: int, k: int, rounds: int, dtype: str, use_heurist
 
 def _run_subprocess(mode: str, args) -> dict:
     env = os.environ.copy()
-    cache_root = os.path.join(tempfile.gettempdir(), "flash_kmeans_triton_cache")
+    cache_root = os.path.join(
+        tempfile.gettempdir(), "flash_kmeans_triton_cache"
+    )
     cache_dir = os.path.join(cache_root, mode)
     os.makedirs(cache_dir, exist_ok=True)
     env["TRITON_CACHE_DIR"] = cache_dir
@@ -94,19 +99,29 @@ def _run_subprocess(mode: str, args) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare heuristic vs autotune compile/latency")
+    parser = argparse.ArgumentParser(
+        description="Compare heuristic vs autotune compile/latency"
+    )
     parser.add_argument("--n", type=int, default=1000000)
     parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--k", type=int, default=200000)
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--dtype", choices=["fp16", "fp32"], default="fp16")
-    parser.add_argument("--mode", choices=["heuristic", "autotune", "both"], default="both")
-    parser.add_argument("--worker", action="store_true", help="Internal flag for subprocess runs")
+    parser.add_argument(
+        "--mode", choices=["heuristic", "autotune", "both"], default="both"
+    )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help="Internal flag for subprocess runs",
+    )
     args = parser.parse_args()
 
     if args.worker:
         use_heuristic = args.mode == "heuristic"
-        _measure_worker(args.n, args.d, args.k, args.rounds, args.dtype, use_heuristic)
+        _measure_worker(
+            args.n, args.d, args.k, args.rounds, args.dtype, use_heuristic
+        )
         return
 
     modes = [args.mode] if args.mode != "both" else ["heuristic", "autotune"]
