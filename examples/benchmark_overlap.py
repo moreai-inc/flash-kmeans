@@ -188,8 +188,10 @@ def kmeans_largeN_no_overlap(
                             x=x_block.unsqueeze(0),
                             cluster_ids=cluster_ids_block,
                             old_centroids=centroids_g[g].unsqueeze(0),
-                            centroid_sums=centroid_sums_g[g].unsqueeze(0),
-                            centroid_cnts=centroid_cnts_g[g].unsqueeze(0),
+                            centroid_weighted_sums=centroid_sums_g[
+                                g
+                            ].unsqueeze(0),
+                            centroid_weights=centroid_cnts_g[g].unsqueeze(0),
                             calculate_new=False,
                         )
 
