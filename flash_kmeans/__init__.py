@@ -1,18 +1,19 @@
 from .interface import FlashKMeans
 
 try:
-    from .kmeans_triton_impl import (
-        batch_kmeans_Euclid,
-        batch_kmeans_Cosine,
-        batch_kmeans_Dot,
-    )
     from .centroid_update_triton import (
         triton_centroid_update_euclid,
         triton_centroid_update_sorted_euclid,
     )
     from .kmeans_large import kmeans_largeN, kmeans_largeN_assign
+    from .kmeans_triton_impl import (
+        batch_kmeans_Cosine,
+        batch_kmeans_Dot,
+        batch_kmeans_Euclid,
+    )
 except Exception:
     import warnings
+
     from .torch_fallback import batch_kmeans_Euclid_torch_native
 
     warnings.warn

@@ -1,14 +1,19 @@
-
 from __future__ import annotations
 
 from typing import Optional
-from flash_kmeans.torch_fallback import euclid_assign_torch_native_chunked, batch_kmeans_Euclid_torch_native
+
 import torch
 
+from flash_kmeans.torch_fallback import (
+    batch_kmeans_Euclid_torch_native,
+    euclid_assign_torch_native_chunked,
+)
+
 try:
-    from flash_kmeans.kmeans_triton_impl import batch_kmeans_Euclid 
     from flash_kmeans.assign_euclid_triton import euclid_assign_triton
     from flash_kmeans.kmeans_large import kmeans_largeN, kmeans_largeN_assign
+    from flash_kmeans.kmeans_triton_impl import batch_kmeans_Euclid
+
     _HAS_TRITON_IMPL = True
 except Exception:
     _HAS_TRITON_IMPL = False
@@ -21,7 +26,9 @@ def _require_triton_cuda():
             "Ensure the package modules are importable."
         )
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required to run the Triton-backed k-means implementation.")
+        raise RuntimeError(
+            "CUDA is required to run the Triton-backed k-means implementation."
+        )
 
 
 class FlashKMeans:
@@ -98,10 +105,11 @@ class FlashKMeans:
         self._raw_device = device
         # default device for single-GPU / in-memory paths
         if device is None:
-            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device(
+                "cuda:0" if torch.cuda.is_available() else "cpu"
+            )
         else:
             self.device = device
-
 
     def train(self, data: torch.Tensor):
         """
@@ -127,7 +135,9 @@ class FlashKMeans:
             B, N, D = data.shape
             x_b = data
         else:
-            raise ValueError("data must be of shape (n_samples, n_features) or (batch_size, n_samples, n_features)")
+            raise ValueError(
+                "data must be of shape (n_samples, n_features) or (batch_size, n_samples, n_features)"
+            )
 
         # Set random seed
         torch.manual_seed(self.seed)
@@ -135,9 +145,13 @@ class FlashKMeans:
 
         if data.device.type == "cpu" and N > self.chunk_size_data_cpu:
             # handle for large N on CPU
-            assert B is None, "Batched data with large N on CPU is not supported yet."
-            assert self.use_triton, "process large N data requires triton implementation." 
-            cluster_ids_b, centroids_b  = kmeans_largeN(
+            assert (
+                B is None
+            ), "Batched data with large N on CPU is not supported yet."
+            assert (
+                self.use_triton
+            ), "process large N data requires triton implementation."
+            cluster_ids_b, centroids_b = kmeans_largeN(
                 x_b[0],
                 self.k,
                 max_iters=self.niter,
@@ -166,17 +180,19 @@ class FlashKMeans:
                 )
             else:
                 # Run batched PyTorch KMeans (Euclidean)
-                cluster_ids_b, centroids_b, _ = batch_kmeans_Euclid_torch_native(
-                    x_b,
-                    self.k,
-                    max_iters=self.niter,
-                    tol=self.tol,
-                    init_centroids=None,
-                    verbose=self.verbose,
-                    chunk_size_N=self.chunk_size_data,
-                    chunk_size_K=self.chunk_size_centroids,
+                cluster_ids_b, centroids_b, _ = (
+                    batch_kmeans_Euclid_torch_native(
+                        x_b,
+                        self.k,
+                        max_iters=self.niter,
+                        tol=self.tol,
+                        init_centroids=None,
+                        verbose=self.verbose,
+                        chunk_size_N=self.chunk_size_data,
+                        chunk_size_K=self.chunk_size_centroids,
+                    )
                 )
- 
+
         self.centroids_b = centroids_b
         self.cluster_ids_b = cluster_ids_b
         self._batch_size = B
@@ -201,7 +217,9 @@ class FlashKMeans:
         """
 
         if self.centroids_b is None:
-            raise RuntimeError("Model not trained. Call train() or fit() first.")
+            raise RuntimeError(
+                "Model not trained. Call train() or fit() first."
+            )
 
         # Normalize input shape
         if data.ndim == 2:
@@ -212,18 +230,24 @@ class FlashKMeans:
             B, N, D = data.shape
             x_b = data
         else:
-            raise ValueError("data must be of shape (n_samples, n_features) or (batch_size, n_samples, n_features)")
+            raise ValueError(
+                "data must be of shape (n_samples, n_features) or (batch_size, n_samples, n_features)"
+            )
 
         if B != self._batch_size:
             raise ValueError(
                 f"Model was trained with batch size B={self._batch_size}, "
                 f"but predict received B={B}. Provide matching batch size."
             )
-        
+
         if data.device.type == "cpu" and N > self.chunk_size_data_cpu:
             # handle for large N on CPU
-            assert B is None, "Batched data with large N on CPU is not supported yet."
-            assert self.use_triton, "process large N data requires triton implementation." 
+            assert (
+                B is None
+            ), "Batched data with large N on CPU is not supported yet."
+            assert (
+                self.use_triton
+            ), "process large N data requires triton implementation."
             labels = kmeans_largeN_assign(
                 x_b[0],
                 self.centroids_b[0],
@@ -232,12 +256,12 @@ class FlashKMeans:
                 device=self._raw_device,
             )
             return labels  # (N,)
-    
+
         # Prepare tensors for kernel call
-        compute_dtype = self.dtype or x_b.dtype 
+        compute_dtype = self.dtype or x_b.dtype
         x_b = x_b.to(device=self.device, dtype=compute_dtype, copy=False)
- 
-        x_sq = (x_b ** 2).sum(dim=-1)
+
+        x_sq = (x_b**2).sum(dim=-1)
 
         if self.use_triton:
             # Call Triton assignment kernel
@@ -268,7 +292,7 @@ class FlashKMeans:
             - (n_samples, n_features)
             - (batch_size, n_samples, n_features)
 
-        
+
         Returns
         -------
         labels : torch.LongTensor (int64)
@@ -279,4 +303,8 @@ class FlashKMeans:
         """
         # cluster_ids: (B, N)
         self.train(data)
-        return self.cluster_ids_b.squeeze(0) if self._batch_size is None else self.cluster_ids_b
+        return (
+            self.cluster_ids_b.squeeze(0)
+            if self._batch_size is None
+            else self.cluster_ids_b
+        )

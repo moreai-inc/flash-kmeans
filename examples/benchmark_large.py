@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import argparse
 import time
 from typing import Optional
+
 import torch
-import argparse
+
 from flash_kmeans.kmeans_large import kmeans_largeN
 
 try:
     from fastkmeans_patch import FastKMeans  # Apply monkey patch to fastkmeans
 
     def kmeans_Euclid_fastkmeans(
-        x, n_clusters, max_iters=100, tol=0.0, init_centroids=None, verbose=False
+        x,
+        n_clusters,
+        max_iters=100,
+        tol=0.0,
+        init_centroids=None,
+        verbose=False,
     ):
         """
         Wrapper for fastkmeans to match the batch interface.
@@ -33,6 +40,7 @@ try:
         kmeans.train(data)
         labels = kmeans.predict(data)
         return labels, None, None
+
 except ImportError:
     print("fastkmeans_patch not found, skipping fastkmeans wrapper.")
     kmeans_Euclid_fastkmeans = None
@@ -51,12 +59,23 @@ def kmeans_Euclid_flashkmeans(
     )
 
 
-def benchmark_kmeans(n, d, k, kmeans_func, max_iters=10, tol=-1.0, verbose=False, dtype=torch.float16):
-    print(f"Benchmarking {kmeans_func.__name__} with N={n}, D={d}, K={k}, iter={max_iters}, dtype={dtype}")
+def benchmark_kmeans(
+    n,
+    d,
+    k,
+    kmeans_func,
+    max_iters=10,
+    tol=-1.0,
+    verbose=False,
+    dtype=torch.float16,
+):
+    print(
+        f"Benchmarking {kmeans_func.__name__} with N={n}, D={d}, K={k}, iter={max_iters}, dtype={dtype}"
+    )
 
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
-    x = torch.randn(n, d, device='cpu', dtype=dtype).pin_memory()
+    x = torch.randn(n, d, device="cpu", dtype=dtype).pin_memory()
     print("Data generated.")
     # warmup
     for _ in range(2):
@@ -76,15 +95,48 @@ def benchmark_kmeans(n, d, k, kmeans_func, max_iters=10, tol=-1.0, verbose=False
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Benchmark KMeans implementations")
-    parser.add_argument("--num-points", "-n", type=int, default=67108864, help="Number of points per batch")
-    parser.add_argument("--dim", "-d", type=int, default=128, help="Dimensionality of points")
-    parser.add_argument("--num-clusters", "-k", type=int, default=8192, help="Number of clusters")
-    parser.add_argument("--max-iters", type=int, default=10, help="Maximum number of iterations")
-    parser.add_argument("--tol", type=float, default=-1, help="Tolerance for center movement; negative disables early stopping")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    parser.add_argument("--dtype", type=str, default="fp16", choices=["fp16", "fp32"],
-                        help="compute dtype (default: fp16)")
+    parser = argparse.ArgumentParser(
+        description="Benchmark KMeans implementations"
+    )
+    parser.add_argument(
+        "--num-points",
+        "-n",
+        type=int,
+        default=67108864,
+        help="Number of points per batch",
+    )
+    parser.add_argument(
+        "--dim", "-d", type=int, default=128, help="Dimensionality of points"
+    )
+    parser.add_argument(
+        "--num-clusters",
+        "-k",
+        type=int,
+        default=8192,
+        help="Number of clusters",
+    )
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=10,
+        help="Maximum number of iterations",
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=-1,
+        help="Tolerance for center movement; negative disables early stopping",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose output"
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="fp16",
+        choices=["fp16", "fp32"],
+        help="compute dtype (default: fp16)",
+    )
 
     args = parser.parse_args()
 
@@ -93,10 +145,22 @@ if __name__ == "__main__":
     k = args.num_clusters
     compute_dtype = torch.float16 if args.dtype == "fp16" else torch.float32
 
-    benchmark_kmeans(n, d, k, kmeans_Euclid_flashkmeans, max_iters=args.max_iters,
-                     verbose=args.verbose, dtype=compute_dtype)
+    benchmark_kmeans(
+        n,
+        d,
+        k,
+        kmeans_Euclid_flashkmeans,
+        max_iters=args.max_iters,
+        verbose=args.verbose,
+        dtype=compute_dtype,
+    )
     if kmeans_Euclid_fastkmeans is not None:
-        benchmark_kmeans(n, d, k, kmeans_Euclid_fastkmeans, max_iters=args.max_iters,
-                         verbose=args.verbose, dtype=compute_dtype)
-
-    
+        benchmark_kmeans(
+            n,
+            d,
+            k,
+            kmeans_Euclid_fastkmeans,
+            max_iters=args.max_iters,
+            verbose=args.verbose,
+            dtype=compute_dtype,
+        )
