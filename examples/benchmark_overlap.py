@@ -178,7 +178,7 @@ def kmeans_largeN_no_overlap(
                             x_block.unsqueeze(0),
                             centroids_g[g].unsqueeze(0),
                             x_sq_cache_g[g][local_idx].unsqueeze(0),
-                            out=cluster_ids_g[g][
+                            idx_out=cluster_ids_g[g][
                                 local_offset:local_end
                             ].unsqueeze(0),
                             c_sq=c_sq_g[g].unsqueeze(0),

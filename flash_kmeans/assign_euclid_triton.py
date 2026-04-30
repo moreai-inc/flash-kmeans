@@ -503,7 +503,8 @@ def _euclid_assign_kernel(
     c_ptr,  # *f16 / *f32 [B, K, D]
     x_sq_ptr,  # *f32         [B, N]
     c_sq_ptr,  # *f32         [B, K]
-    out_ptr,  # *i32         [B, N]
+    idx_out_ptr,  # *i32         [B, N]
+    dist_out_ptr,  # *f32         [B, N]
     B: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
@@ -605,8 +606,15 @@ def _euclid_assign_kernel(
     # ------------------------------------------------------------------
     # Write results
     # ------------------------------------------------------------------
-    out_ptrs = out_ptr + pid_b * stride_out_b + n_offsets * stride_out_n
-    tl.store(out_ptrs, best_idx, mask=n_mask)
+    idx_out_ptrs = (
+        idx_out_ptr + pid_b * stride_out_b + n_offsets * stride_out_n
+    )
+    tl.store(idx_out_ptrs, best_idx, mask=n_mask)
+
+    dist_out_ptrs = (
+        dist_out_ptr + pid_b * stride_out_b + n_offsets * stride_out_n
+    )
+    tl.store(dist_out_ptrs, best_dist, mask=n_mask)
 
 
 _euclid_assign_kernel_autotuned = triton.autotune(
@@ -719,7 +727,8 @@ def euclid_assign_triton(
     x: torch.Tensor,
     centroids: torch.Tensor,
     x_sq: torch.Tensor,
-    out: torch.Tensor = None,
+    idx_out: torch.Tensor = None,
+    dist_sq_out: torch.Tensor = None,
     c_sq: torch.Tensor = None,
     *,
     BLOCK_N: int = 128,
@@ -728,7 +737,7 @@ def euclid_assign_triton(
     num_stages: Optional[int] = None,
     config: Optional[dict] = None,
     use_heuristic: bool = True,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return nearest-centroid indices using Triton kernel.
 
     Args:
@@ -740,6 +749,7 @@ def euclid_assign_triton(
 
     Returns:
         cluster_ids (B, N) int32 (callers can cast to int64 if desired)
+        cluster_dists_sq (B, N) float32
     Extra:
         config        : {"BLOCK_N","BLOCK_K","num_warps","num_stages"} to force a config
         use_heuristic : use a fixed heuristic config instead of autotune
@@ -759,8 +769,10 @@ def euclid_assign_triton(
     # centroids = centroids.contiguous()
     # x_sq = x_sq.contiguous()
 
-    if out is None:
-        out = torch.empty((B, N), device=x.device, dtype=torch.int32)
+    if idx_out is None:
+        idx_out = torch.empty((B, N), device=x.device, dtype=torch.int32)
+    if dist_sq_out is None:
+        dist_sq_out = torch.empty((B, N), device=x.device, dtype=torch.float32)
     if c_sq is None:
         c_sq = (centroids.to(torch.float32) ** 2).sum(-1)
 
@@ -769,7 +781,7 @@ def euclid_assign_triton(
     stride_c_b, stride_c_k, stride_c_d = centroids.stride()
     stride_xsq_b, stride_xsq_n = x_sq.stride()
     stride_csq_b, stride_csq_k = c_sq.stride()
-    stride_out_b, stride_out_n = out.stride()
+    stride_out_b, stride_out_n = idx_out.stride()
 
     grid = lambda META: (triton.cdiv(N, META["BLOCK_N"]), B)
 
@@ -796,7 +808,8 @@ def euclid_assign_triton(
             centroids,
             x_sq,
             c_sq,
-            out,
+            idx_out,
+            dist_sq_out,
             B,
             N,
             K,
@@ -824,7 +837,8 @@ def euclid_assign_triton(
             centroids,
             x_sq,
             c_sq,
-            out,
+            idx_out,
+            dist_sq_out,
             B,
             N,
             K,
@@ -842,7 +856,7 @@ def euclid_assign_triton(
             stride_out_b,
             stride_out_n,
         )
-    return out
+    return idx_out, dist_sq_out
 
 
 def cosine_assign_triton(

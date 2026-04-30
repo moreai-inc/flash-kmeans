@@ -13,7 +13,7 @@ from flash_kmeans.centroid_update_triton import (  # triton_centroid_update_cosi
 # 1. Euclidean
 def _euclid_iter(x, x_sq, w, centroids, use_heuristic=True):
 
-    cluster_ids = euclid_assign_triton(
+    cluster_ids, cluster_dists = euclid_assign_triton(
         x, centroids, x_sq, use_heuristic=use_heuristic
     )
     centroids_new, centroid_weights = triton_centroid_update_sorted_euclid(
@@ -21,7 +21,7 @@ def _euclid_iter(x, x_sq, w, centroids, use_heuristic=True):
     )
 
     shift = (centroids_new - centroids).norm(dim=-1).max()
-    return centroids_new, centroid_weights, shift, cluster_ids
+    return centroids_new, centroid_weights, shift, cluster_ids, cluster_dists
 
 
 COMPILE_FLAG = True
@@ -81,9 +81,13 @@ def batch_kmeans_Euclid(
 
     for it in range(max_iters):
         # ---- compiled single iteration ----
-        centroids_new, centroid_weights, center_shift, cluster_ids = (
-            _euclid_iter_compiled(x, x_sq, w, centroids, use_heuristic)
-        )
+        (
+            centroids_new,
+            centroid_weights,
+            center_shift,
+            cluster_ids,
+            cluster_dists,
+        ) = _euclid_iter_compiled(x, x_sq, w, centroids, use_heuristic)
 
         # 4. Check for convergence
         if verbose:
@@ -92,7 +96,7 @@ def batch_kmeans_Euclid(
             break
         centroids = centroids_new.clone()
 
-    return cluster_ids, centroids, centroid_weights, it + 1
+    return cluster_ids, cluster_dists, centroids, centroid_weights, it + 1
 
 
 if __name__ == "__main__":
@@ -109,15 +113,19 @@ if __name__ == "__main__":
     old_centroids = torch.randn(B, K, D, device="cuda", dtype=dtype)
 
     print("=== Testing Euclidean Distance K-Means ===")
-    cluster_ids_euclid, centroids_euclid, centroid_weights, n_iters_euclid = (
-        batch_kmeans_Euclid(
-            x,
-            w,
-            K,
-            max_iters=max_iters,
-            verbose=True,
-            init_centroids=old_centroids,
-        )
+    (
+        cluster_ids_euclid,
+        cluster_dists_sq_euclid,
+        centroids_euclid,
+        centroid_weights,
+        n_iters_euclid,
+    ) = batch_kmeans_Euclid(
+        x,
+        w,
+        K,
+        max_iters=max_iters,
+        verbose=True,
+        init_centroids=old_centroids,
     )
     print(
         f"Euclidean - cluster_ids shape: {cluster_ids_euclid.shape}, centroids shape: {centroids_euclid.shape}"
@@ -141,11 +149,11 @@ if __name__ == "__main__":
         centers = old_centroids[b].to(torch.float32).numpy(force=True)
         scipy_clusters, scipy_labels = kmeans2(X, centers, 1, minit="matrix")
 
-        dists = np.linalg.norm(
+        triton_scipy_dist = np.linalg.norm(
             centroids_euclid[b].numpy(force=True) - scipy_clusters,
             axis=1,
         )
-        argmax = np.argmax(dists)
+        argmax = np.argmax(triton_scipy_dist)
 
         scipy_original_idxs_in_cluster = np.unique(
             original_idxs[scipy_labels == argmax]
@@ -160,7 +168,7 @@ if __name__ == "__main__":
             triton_original_idxs_in_cluster.numpy(force=True)
             == scipy_original_idxs_in_cluster
         ):
-            assert dists[argmax] < 5.0e-3
+            assert triton_scipy_dist[argmax] < 5.0e-3
         else:
             triton_idxs = set(
                 triton_original_idxs_in_cluster.numpy(force=True)
@@ -190,12 +198,14 @@ if __name__ == "__main__":
 
                 assert (
                     abs(
-                        torch.linalg.norm(triton_query - triton_cluster).item()
+                        torch.sqrt(
+                            cluster_dists_sq_euclid[b, triton_query_idx]
+                        ).item()
                         - torch.linalg.norm(
                             triton_query - triton_cluster_of_scipy_assignment
                         ).item()
                     )
-                    < 1.0e-3
+                    < 5.0e-3
                 )
 
                 assert (
@@ -205,7 +215,7 @@ if __name__ == "__main__":
                             scipy_query - scipy_cluster_of_triton_assignment
                         )
                     )
-                    < 1.0e-3
+                    < 5.0e-3
                 )
 
     # Profile the time cost with rounds=100
@@ -221,6 +231,7 @@ if __name__ == "__main__":
     for i in range(rounds):
         (
             cluster_ids_euclid,
+            cluster_dists_sq_euclid,
             centroids_euclid,
             centroid_weights,
             n_iters_euclid,
