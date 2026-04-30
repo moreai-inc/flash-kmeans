@@ -1,7 +1,4 @@
 import torch
-import torch.nn.functional as F
-from torch.cuda import nvtx
-from tqdm import trange
 
 from flash_kmeans.assign_euclid_triton import (  # cosine_assign_triton,
     euclid_assign_triton,
@@ -19,12 +16,12 @@ def _euclid_iter(x, x_sq, w, centroids, use_heuristic=True):
     cluster_ids = euclid_assign_triton(
         x, centroids, x_sq, use_heuristic=use_heuristic
     )
-    centroids_new = triton_centroid_update_sorted_euclid(
+    centroids_new, centroid_weights = triton_centroid_update_sorted_euclid(
         x, w, cluster_ids, centroids
     )
 
     shift = (centroids_new - centroids).norm(dim=-1).max()
-    return centroids_new, shift, cluster_ids
+    return centroids_new, centroid_weights, shift, cluster_ids
 
 
 COMPILE_FLAG = True
@@ -84,8 +81,8 @@ def batch_kmeans_Euclid(
 
     for it in range(max_iters):
         # ---- compiled single iteration ----
-        centroids_new, center_shift, cluster_ids = _euclid_iter_compiled(
-            x, x_sq, w, centroids, use_heuristic
+        centroids_new, centroid_weights, center_shift, cluster_ids = (
+            _euclid_iter_compiled(x, x_sq, w, centroids, use_heuristic)
         )
 
         # 4. Check for convergence
@@ -95,27 +92,121 @@ def batch_kmeans_Euclid(
             break
         centroids = centroids_new.clone()
 
-    return cluster_ids, centroids, it + 1
+    return cluster_ids, centroids, centroid_weights, it + 1
 
 
 if __name__ == "__main__":
     torch.manual_seed(0)
 
-    # 用法示例
-    B, N, D = 32, 74256, 128  # 32 个 batch，每个 batch 10 万点，128 维
+    B, N, D = 32, 74256, 128
     dtype = torch.float16
-    x = torch.randn(B, N, D, device="cuda", dtype=dtype)  # 大 batch 用 GPU 跑
-    w = torch.rand(B, N, device="cuda", dtype=dtype)  # 大 batch 用 GPU 跑
-    n_clusters = 1000
-    max_iters = 2
+    x = torch.randn(B, N, D, device="cuda", dtype=dtype)
+    # HACK for verification with sample weights as sklearn is bugged
+    w = torch.randint(1, 5, (B, N), device="cuda", dtype=dtype)
+    K = 1000
+    max_iters = 1
+
+    old_centroids = torch.randn(B, K, D, device="cuda", dtype=dtype)
 
     print("=== Testing Euclidean Distance K-Means ===")
-    cluster_ids_euclid, centroids_euclid, n_iters_euclid = batch_kmeans_Euclid(
-        x, w, n_clusters, max_iters=max_iters, verbose=True
+    cluster_ids_euclid, centroids_euclid, centroid_weights, n_iters_euclid = (
+        batch_kmeans_Euclid(
+            x,
+            w,
+            K,
+            max_iters=max_iters,
+            verbose=True,
+            init_centroids=old_centroids,
+        )
     )
     print(
         f"Euclidean - cluster_ids shape: {cluster_ids_euclid.shape}, centroids shape: {centroids_euclid.shape}"
     )
+
+    import numpy as np
+    from scipy.cluster.vq import kmeans2
+
+    for b in range(B):
+        # HACK for verification with sample weights as sklearn is bugged
+        original_idxs = torch.repeat_interleave(
+            torch.arange(N, device="cuda", dtype=torch.long),
+            w[b].to(torch.long),
+            dim=0,
+        ).numpy(force=True)
+        X = (
+            torch.repeat_interleave(x[b], w[b].to(torch.long), dim=0)
+            .to(torch.float32)
+            .numpy(force=True)
+        )
+        centers = old_centroids[b].to(torch.float32).numpy(force=True)
+        scipy_clusters, scipy_labels = kmeans2(X, centers, 1, minit="matrix")
+
+        dists = np.linalg.norm(
+            centroids_euclid[b].numpy(force=True) - scipy_clusters,
+            axis=1,
+        )
+        argmax = np.argmax(dists)
+
+        scipy_original_idxs_in_cluster = np.unique(
+            original_idxs[scipy_labels == argmax]
+        )
+        triton_original_idxs_in_cluster = torch.where(
+            cluster_ids_euclid[b] == argmax
+        )[0]
+
+        if triton_original_idxs_in_cluster.shape[
+            0
+        ] == scipy_original_idxs_in_cluster.shape[0] and np.all(
+            triton_original_idxs_in_cluster.numpy(force=True)
+            == scipy_original_idxs_in_cluster
+        ):
+            assert dists[argmax] < 5.0e-3
+        else:
+            triton_idxs = set(
+                triton_original_idxs_in_cluster.numpy(force=True)
+            )
+            scipy_idxs = set(scipy_original_idxs_in_cluster)
+            for triton_query_idx in triton_idxs ^ scipy_idxs:
+                scipy_query_idx = np.where(original_idxs == triton_query_idx)[
+                    0
+                ][0]
+
+                triton_query = x[b, triton_query_idx]
+                scipy_query = X[scipy_query_idx]
+
+                triton_query_cluster_idx = cluster_ids_euclid[
+                    b, triton_query_idx
+                ]
+                scipy_query_cluster_idx = scipy_labels[scipy_query_idx]
+
+                triton_cluster = old_centroids[b, triton_query_cluster_idx]
+                triton_cluster_of_scipy_assignment = old_centroids[
+                    b, scipy_query_cluster_idx
+                ]
+                scipy_cluster = centers[scipy_query_cluster_idx]
+                scipy_cluster_of_triton_assignment = centers[
+                    triton_query_cluster_idx
+                ]
+
+                assert (
+                    abs(
+                        torch.linalg.norm(triton_query - triton_cluster).item()
+                        - torch.linalg.norm(
+                            triton_query - triton_cluster_of_scipy_assignment
+                        ).item()
+                    )
+                    < 1.0e-3
+                )
+
+                assert (
+                    abs(
+                        np.linalg.norm(scipy_query - scipy_cluster)
+                        - np.linalg.norm(
+                            scipy_query - scipy_cluster_of_triton_assignment
+                        )
+                    )
+                    < 1.0e-3
+                )
 
     # Profile the time cost with rounds=100
     rounds = 200
@@ -128,15 +219,18 @@ if __name__ == "__main__":
     euclid_end = torch.cuda.Event(enable_timing=True)
     euclid_start.record()
     for i in range(rounds):
-        cluster_ids_euclid, centroids_euclid, n_iters_euclid = (
-            batch_kmeans_Euclid(
-                x,
-                w,
-                n_clusters,
-                init_centroids=centroids_euclid,
-                max_iters=max_iters,
-                verbose=False,
-            )
+        (
+            cluster_ids_euclid,
+            centroids_euclid,
+            centroid_weights,
+            n_iters_euclid,
+        ) = batch_kmeans_Euclid(
+            x,
+            w,
+            K,
+            init_centroids=centroids_euclid,
+            max_iters=max_iters,
+            verbose=False,
         )
     euclid_end.record()
     torch.cuda.synchronize()
@@ -146,5 +240,5 @@ if __name__ == "__main__":
         f"Euclidean Distance K-Means: {euclid_time:.2f} ms per run, total {n_iters_euclid} iterations, {euclid_time_per_iter:.2f} ms per iter"
     )
     print(
-        f"Euclidean Distance TFLOPS: {2 * B * N * D * n_clusters * n_iters_euclid / euclid_time / 1e12:.2f}"
+        f"Euclidean Distance TFLOPS: {2 * B * N * D * K * n_iters_euclid / euclid_time / 1e12:.2f}"
     )

@@ -311,9 +311,9 @@ def triton_centroid_update_sorted_euclid(
         centroids = torch.where(
             empty_mask, old_centroids.to(torch.float32), centroids
         )
-        return centroids.to(x.dtype)
+        return centroids.to(x.dtype), centroid_weights.to(x.dtype)
     else:
-        return None
+        return None, None
 
 
 # ------------------------------ END new implementation ------------------------------
@@ -332,9 +332,7 @@ def main():
     cluster_ids = torch.randint(0, K, (B, N), device="cuda", dtype=torch.int32)
 
     # Random old centroids for handling empty clusters
-    old_centroids = F.normalize(
-        torch.randn(B, K, D, device="cuda", dtype=dtype), p=2, dim=-1
-    )
+    old_centroids = torch.randn(B, K, D, device="cuda", dtype=dtype)
 
     # ---------------- Correctness check (compile Triton kernel) ----------------
     ref_centroids = torch_loop_centroid_update_euclid(
@@ -343,7 +341,7 @@ def main():
     # tri_centroids = triton_centroid_update_euclid(
     #     x, cluster_ids, old_centroids
     # )  # this call triggers compilation
-    tri_sorted_centroids = triton_centroid_update_sorted_euclid(
+    tri_sorted_centroids, _ = triton_centroid_update_sorted_euclid(
         x, w, cluster_ids, old_centroids
     )  # this call triggers compilation
 
